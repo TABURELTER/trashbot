@@ -1,18 +1,22 @@
 name: TrashBot
 on:
   schedule:
-    - cron: '0 * * * *'   # каждый час
+    - cron: '0 * * * *'  # каждый час
   workflow_dispatch:
     inputs:
       mode:
         description: 'Режим запуска (normal/register/test)'
         required: false
         default: 'normal'
+
 jobs:
   run:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'

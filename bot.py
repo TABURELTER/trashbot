@@ -1,8 +1,8 @@
-import json, os, datetime, requests
+import json, os, datetime, requests, subprocess
 
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 API = f"https://api.telegram.org/bot{TOKEN}"
-MODE = os.getenv("MODE", "normal")  # "normal" или "register"
+MODE = os.getenv("MODE", "normal")  # "normal", "register", "test"
 
 def load_json(name, default):
     try:
@@ -26,11 +26,12 @@ def send_message(chat_id, text, reply_markup=None):
 def get_updates():
     return requests.get(f"{API}/getUpdates").json().get("result", [])
 
-people_data = load_json("people.json", {})
+# === Загрузка данных ===
+people_data = load_json("people.json", {"start_date": str(datetime.date.today()), "people": []})
 state = load_json("state.json", {"done_date": None})
 history = load_json("history.json", [])
 
-# === Режим регистрации ===
+# === РЕЖИМ РЕГИСТРАЦИИ ===
 if MODE == "register":
     updates = get_updates()
     added = []
@@ -50,21 +51,28 @@ if MODE == "register":
                 })
                 added.append(name)
                 send_message(chat_id, "✅ Ты успешно добавлен в очередь мусора!")
+
     if added:
         save_json("people.json", people_data)
+        # === Автопуш в репозиторий ===
+        subprocess.run(["git", "config", "--global", "user.email", "action@github.com"])
+        subprocess.run(["git", "config", "--global", "user.name", "GitHub Action"])
+        subprocess.run(["git", "add", "people.json"])
+        subprocess.run(["git", "commit", "-m", f"Добавлены новые пользователи: {', '.join(added)}"])
+        subprocess.run(["git", "push", "origin", "main"])
         print(f"Добавлены пользователи: {', '.join(added)}")
     else:
         print("Новых регистраций нет.")
     exit(0)
 
-# === Обычный режим ===
+# === НОРМАЛЬНЫЙ РЕЖИМ ===
 people = people_data.get("people", [])
 if not people:
     print("Нет зарегистрированных пользователей.")
     exit(0)
 
-start_date = datetime.date.fromisoformat(people_data["start_date"])
 today = datetime.date.today()
+start_date = datetime.date.fromisoformat(people_data["start_date"])
 days_passed = (today - start_date).days
 index_today = days_passed % len(people)
 
@@ -74,7 +82,7 @@ tomorrow_p = people[(index_today + 1) % len(people)]
 
 keyboard = {"inline_keyboard": [[{"text": "🗑 Выкинул", "callback_data": "done"}]]}
 
-# === Проверка callback ===
+# === Проверка callback кнопок ===
 updates = get_updates()
 for u in updates:
     if "callback_query" in u:
@@ -94,7 +102,7 @@ for u in updates:
             })
             send_message(cb["from"]["id"], "Спасибо! Сегодня больше не напомню 🧹")
 
-# === Сброс ночью ===
+# === Сброс статуса ночью ===
 hour = datetime.datetime.now().hour
 if hour == 3:
     state["done_date"] = None
@@ -108,12 +116,12 @@ info_text = (
     f"📆 Завтра: {tomorrow_p['name']}\n"
 )
 
-# === Уведомления ===
+# === Уведомления (08:00 и 20:00) ===
 already_done = state.get("done_date") == str(today)
 if not already_done and hour in [8, 20]:
     send_message(today_p["chat_id"], f"Привет, {today_p['name']}! Сегодня твоя очередь выносить мусор 🗑", reply_markup=keyboard)
 
-# === Инфо всем ===
+# === Информационное сообщение всем ===
 for p in people:
     send_message(p["chat_id"], info_text)
 
