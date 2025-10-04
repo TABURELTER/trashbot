@@ -101,19 +101,20 @@ def build_summary(people, idx):
     )
 
 def reset_new_day(recipients):
-    if state.get("last_day") == today:
-        return
-    # удаляем пинги и сбрасываем счётчики только у получателей текущего режима
+    # Пер-пользовательский сброс: безопасно при смешанном использовании режимов (test→normal)
     for u in recipients:
         key = str(u["chat_id"])
         s = state.get(key, {})
+        if s.get("last_day") == today:
+            state[key] = s
+            continue
         pmid = s.get("ping_message_id")
         if pmid:
             delete_message(u["chat_id"], pmid)
         s["ping_message_id"] = None
         s["ping_count"] = 0
+        s["last_day"] = today
         state[key] = s
-    state["last_day"] = today
 
 def ensure_info(recipient_chat_id, text):
     key = str(recipient_chat_id)
