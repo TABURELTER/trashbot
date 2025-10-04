@@ -29,8 +29,18 @@ def load_json(name, default):
         return default
 
 def save_json(name, data):
-    with open(name, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+    import tempfile, shutil
+    d = os.path.dirname(name) or "."
+    fd, tmp = tempfile.mkstemp(dir=d, prefix=".tmp-", suffix=".json")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        shutil.move(tmp, name)
+    finally:
+        try:
+            os.remove(tmp)
+        except Exception:
+            pass
 
 # --- Telegram API ---
 MOCK_MSG_ID = 0
@@ -72,6 +82,9 @@ def edit_message(chat_id, message_id, text):
             "parse_mode": "HTML",
         })
     except Exception as e:
+        msg = str(e)
+        if "message is not modified" in msg:
+            return {"ok": True, "no_change": True}
         print(f"[WARN] edit failed: {e}")
         return None
 
