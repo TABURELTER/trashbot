@@ -1,4 +1,9 @@
 import json, os, datetime, requests
+try:
+    from zoneinfo import ZoneInfo  # py3.9+
+except Exception:
+    ZoneInfo = None
+
 
 # --- Настройки ---
 TOKEN = os.getenv("TELEGRAM_TOKEN")  # токен берём ТОЛЬКО из секретов окружения
@@ -9,6 +14,11 @@ MODE = os.getenv("MODE", "test")  # register / normal / test / debug
 STATE_FILE = "state.json"
 PEOPLE_FILE = "people.json"
 HISTORY_FILE = "history.json"
+
+# Таймзона и расписание
+BOT_TZ = os.getenv("BOT_TZ", "Europe/Moscow")
+FIRE_TIMES = os.getenv("FIRE_TIMES", "10:00,20:00,23:00")  # локальное время
+WINDOW_MIN = int(os.getenv("WINDOW_MIN", "15"))  # допуск раннего/позднего запуска (минуты)
 
 # --- Хелперы работы с файлами ---
 def load_json(name, default):
@@ -74,8 +84,38 @@ people = people_data.get("people", [])
 state = load_json(STATE_FILE, {"last_day": None})
 history = load_json(HISTORY_FILE, [])
 
-today_date = datetime.date.today()
+def now_local():
+    if ZoneInfo:
+        try:
+            return datetime.datetime.now(ZoneInfo(BOT_TZ))
+        except Exception:
+            pass
+    return datetime.datetime.utcnow() + datetime.timedelta(hours=3)
+
+def today_local_date():
+    return now_local().date()
+
+today_date = today_local_date()
 today = today_date.isoformat()
+
+def parse_fire_times(times: str):
+    out = []
+    for t in times.split(","):
+        t = t.strip()
+        if not t: continue
+        hh, mm = t.split(":")
+        out.append((int(hh), int(mm), f"{int(hh):02d}:{int(mm):02d}"))
+    return out
+
+FIRE_SLOTS = parse_fire_times(FIRE_TIMES)
+
+def current_window_tag(now_dt: datetime.datetime):
+    for hh, mm, tag in FIRE_SLOTS:
+        target = now_dt.replace(hour=hh, minute=mm, second=0, microsecond=0)
+        delta = abs((now_dt - target).total_seconds()) / 60.0
+        if delta <= WINDOW_MIN:
+            return tag
+    return None
 
 def rotation_index(start_date_iso, people_len, on_date):
     if people_len == 0:
@@ -113,6 +153,8 @@ def reset_new_day(recipients):
             delete_message(u["chat_id"], pmid)
         s["ping_message_id"] = None
         s["ping_count"] = 0
+        s["fired_windows"] = []
+        s["info_last_day"] = None
         s["last_day"] = today
         state[key] = s
 
@@ -143,6 +185,20 @@ def send_or_replace_ping(recipient_chat_id, text):
     s["ping_count"] = int(s.get("ping_count", 0)) + 1
     state[key] = s
 
+def can_fire_window(recipient_chat_id, tag):
+    key = str(recipient_chat_id)
+    s = state.get(key, {})
+    fired = set(s.get("fired_windows") or [])
+    return tag not in fired
+
+def mark_fired_window(recipient_chat_id, tag):
+    key = str(recipient_chat_id)
+    s = state.get(key, {})
+    fired = set(s.get("fired_windows") or [])
+    fired.add(tag)
+    s["fired_windows"] = sorted(list(fired))
+    state[key] = s
+
 # --- Режимы ---
 
 def run_register_mode():
@@ -164,9 +220,12 @@ def run_normal_mode():
     # Инфо каждому (редактируемое)
     for u in recipients:
         ensure_info(u["chat_id"], summary)
-    # Пинг ответственному
-    ping_text = f"Напоминание: сегодня ваша очередь вынести мусор."
-    send_or_replace_ping(user_today["chat_id"], ping_text)
+    # Пинг ответственному: только в окне расписания
+    tag = current_window_tag(now_local())
+    if tag and can_fire_window(user_today["chat_id"], tag):
+        ping_text = f"Напоминание: сегодня ваша очередь вынести мусор."
+        send_or_replace_ping(user_today["chat_id"], ping_text)
+        mark_fired_window(user_today["chat_id"], tag)
 
 
 def run_test_mode():
@@ -198,8 +257,12 @@ def run_test_mode():
         f"[TEST] Имитация пинга для: {intended}\n"
         f"Напоминание: сегодня очередь вынести мусор."
     )
-    for t in testers:
-        send_or_replace_ping(t["chat_id"], ping_text)
+    tag = current_window_tag(now_local())
+    if tag:
+        for t in testers:
+            if can_fire_window(t["chat_id"], tag):
+                send_or_replace_ping(t["chat_id"], ping_text)
+                mark_fired_window(t["chat_id"], tag)
 
 
 def run_debug_mode():
