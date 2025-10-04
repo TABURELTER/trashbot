@@ -2,9 +2,15 @@
   "start_date": "2025-10-01",
   "people": [
     {
+      "name": "Rushan",
+      "tg": "@lntckkk",
+      "chat_id": 966395543
+    },
+    {
       "name": "Треангулированный",
       "tg": "@shishmashih",
-      "chat_id": 704658354
+      "chat_id": 704658354,
+      "tester":true
     },
     {
       "name": "Илья",
@@ -15,11 +21,6 @@
       "name": "Evgenii",
       "tg": "@wrzdx",
       "chat_id": 1956523577
-    },
-    {
-      "name": "Rushan",
-      "tg": "@lntckkk",
-      "chat_id": 966395543
     }
   ]
 }
