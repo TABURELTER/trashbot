@@ -101,7 +101,12 @@ people = people_data.get("people", [])
 state = load_json(STATE_FILE, {"last_day": None})
 history = load_json(HISTORY_FILE, [])
 
+SIM_NOW = None
+
 def now_local():
+    global SIM_NOW
+    if SIM_NOW is not None:
+        return SIM_NOW
     if ZoneInfo:
         try:
             return datetime.datetime.now(ZoneInfo(BOT_TZ))
@@ -111,6 +116,12 @@ def now_local():
 
 def today_local_date():
     return now_local().date()
+
+def _set_sim_now(dt):
+    global SIM_NOW, today_date, today
+    SIM_NOW = dt
+    today_date = SIM_NOW.date()
+    today = today_date.isoformat()
 
 today_date = today_local_date()
 today = today_date.isoformat()
@@ -240,9 +251,7 @@ def run_e2e_mode():
     idx = rotation_index(people_data["start_date"], len(people), today_date)
     summary = build_summary(people, idx)
     for u in testers:
-        ensure_info(u['chat_id'], "[TEST/E2E] Форс-обновление сводки
-
-" + summary)
+        ensure_info(u['chat_id'], "[TEST/E2E] Форс-обновление сводки" + summary)
     # 3) Ping replace cycle
     results = []
     for u in testers:
@@ -275,6 +284,39 @@ def run_e2e_mode():
     with open('e2e-result.json', 'w', encoding='utf-8') as f:
         _json.dump({'date': today, 'results': results}, f, ensure_ascii=False, indent=2)
     print('[E2E] Итог записан в e2e-result.json')
+
+
+
+def run_sim_week_mode():
+    print("=== Simulate 7 days (test-mode logic) ===")
+    testers = [p for p in people if p.get('tester')]
+    recips = testers if testers else people
+    from datetime import datetime, timedelta
+    base = today_local_date()
+    results = []
+    for d in range(7):
+        # start of day ~ 09:00 local
+        _set_sim_now(datetime.combine(base + timedelta(days=d), datetime.min.time()).replace(hour=9, minute=0))
+        # run test mode once to perform daily reset and info edits
+        run_test_mode()
+        # simulate each fire window
+        for hh, mm, tag in FIRE_SLOTS:
+            _set_sim_now(now_local().replace(hour=hh, minute=mm, second=0, microsecond=0))
+            run_test_mode()
+        # record intended person for that day
+        idx = rotation_index(people_data['start_date'], len(people), today_date) if people else None
+        intended = people[idx] if idx is not None else None
+        results.append({
+            'day': today,
+            'intended': {'name': intended.get('name') if intended else None, 'tg': intended.get('tg') if intended else None},
+            'testers_count': len(testers),
+            'recipients_count': len(recips)
+        })
+    # write result file
+    import json as _json
+    with open('sim-week-result.json', 'w', encoding='utf-8') as f:
+        _json.dump({'start': str(base), 'results': results}, f, ensure_ascii=False, indent=2)
+    print('[SIM] Итог записан в sim-week-result.json')
 
 # --- Режимы ---
 
@@ -393,6 +435,8 @@ elif MODE == "debug":
     run_debug_mode()
 elif MODE == "e2e":
     run_e2e_mode()
+elif MODE == "sim_week":
+    run_sim_week_mode()
 elif MODE == "maint_info":
     run_maint_info_mode(os.getenv("SCOPE", "testers"))
 elif MODE == "maint_purge":
