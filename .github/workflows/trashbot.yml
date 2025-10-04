@@ -25,4 +25,8 @@ jobs:
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           MODE: ${{ github.event.inputs.mode }}
-        run: python bot.py
+      run: |
+        MODE="${{ github.event.inputs.mode }}"
+        if [ -z "$MODE" ]; then MODE=test; fi
+        export MODE
+        python bot.py
