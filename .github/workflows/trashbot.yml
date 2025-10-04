@@ -5,9 +5,13 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: 'Режим запуска (normal/register/test)'
+        description: 'Режим запуска (normal/register/test/maint_info/maint_purge/e2e)'
         required: false
         default: 'test'
+      SCOPE:
+        description: 'Группа получателей (testers/all)'
+        required: false
+        default: 'testers'
 
 jobs:
   run:
@@ -28,8 +32,10 @@ jobs:
           BOT_TZ: Europe/Moscow
           FIRE_TIMES: 10:00,20:00,23:00
           WINDOW_MIN: 15
+          SCOPE: ${{ github.event.inputs.SCOPE }}
         run: |
           MODE="${{ github.event.inputs.mode }}"
           if [ -z "$MODE" ]; then MODE=test; fi
           export MODE
+          export SCOPE
           python bot.py
