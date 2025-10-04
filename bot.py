@@ -1,9 +1,16 @@
-import json, os, datetime, requests, subprocess
+import json, os, datetime, requests
 
-TOKEN = os.getenv("TELEGRAM_TOKEN")
-API = f"https://api.telegram.org/bot{TOKEN}"
-MODE = os.getenv("MODE", "normal")  # "normal", "register", "test"
+# --- Настройки ---
+TOKEN = os.getenv("TELEGRAM_TOKEN")  # токен берём ТОЛЬКО из секретов окружения
+API = f"https://api.telegram.org/bot{TOKEN}" if TOKEN else None
 
+MODE = os.getenv("MODE", "test")  # register / normal / test / debug
+
+STATE_FILE = "state.json"
+PEOPLE_FILE = "people.json"
+HISTORY_FILE = "history.json"
+
+# --- Хелперы работы с файлами ---
 def load_json(name, default):
     try:
         with open(name, "r", encoding="utf-8") as f:
@@ -15,117 +22,201 @@ def save_json(name, data):
     with open(name, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
-def send_message(chat_id, text, reply_markup=None):
-    requests.post(f"{API}/sendMessage", json={
+# --- Telegram API ---
+def _tg_call(method, payload):
+    if not TOKEN:
+        # оффлайн/локально — просто логируем
+        print(f"[TG/{method}] {json.dumps(payload, ensure_ascii=False)}")
+        # эмулируем ответ с message_id
+        if method in ("sendMessage",):
+            return {"message_id": 1}
+        return None
+    url = f"{API}/{method}"
+    resp = requests.post(url, json=payload, timeout=30)
+    try:
+        data = resp.json()
+    except Exception:
+        raise RuntimeError(f"Telegram API error: status={resp.status_code} body={resp.text[:200]}")
+    if not data.get("ok"):
+        raise RuntimeError(f"Telegram API error: {data}")
+    return data.get("result")
+
+def send_message(chat_id, text, disable_notification=False):
+    return _tg_call("sendMessage", {
         "chat_id": chat_id,
         "text": text,
-        "parse_mode": "Markdown",
-        "reply_markup": reply_markup
+        "parse_mode": "HTML",
+        "disable_notification": disable_notification
     })
 
-def get_updates():
-    return requests.get(f"{API}/getUpdates").json().get("result", [])
+def edit_message(chat_id, message_id, text):
+    try:
+        return _tg_call("editMessageText", {
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "text": text,
+            "parse_mode": "HTML",
+        })
+    except Exception as e:
+        print(f"[WARN] edit failed: {e}")
+        return None
 
-# === Загрузка данных ===
-people_data = load_json("people.json", {"start_date": str(datetime.date.today()), "people": []})
-state = load_json("state.json", {"done_date": None})
-history = load_json("history.json", [])
+def delete_message(chat_id, message_id):
+    try:
+        return _tg_call("deleteMessage", {"chat_id": chat_id, "message_id": message_id})
+    except Exception as e:
+        print(f"[WARN] delete failed: {e}")
+        return None
 
-# === РЕЖИМ РЕГИСТРАЦИИ ===
-if MODE == "register":
-    updates = get_updates()
-    added = []
-    for u in updates:
-        msg = u.get("message")
-        if not msg: continue
-        text = msg.get("text", "").lower().strip()
-        if text == "мусор мой":
-            chat_id = msg["chat"]["id"]
-            name = msg["from"].get("first_name", "Без имени")
-            username = msg["from"].get("username", "")
-            if not any(p["chat_id"] == chat_id for p in people_data["people"]):
-                people_data["people"].append({
-                    "name": name,
-                    "tg": f"@{username}" if username else name,
-                    "chat_id": chat_id
-                })
-                added.append(name)
-                send_message(chat_id, "✅ Ты успешно добавлен в очередь мусора!")
-
-    if added:
-        save_json("people.json", people_data)
-        # === Автопуш в репозиторий ===
-        subprocess.run(["git", "config", "--global", "user.email", "action@github.com"])
-        subprocess.run(["git", "config", "--global", "user.name", "GitHub Action"])
-        subprocess.run(["git", "add", "people.json"])
-        subprocess.run(["git", "commit", "-m", f"Добавлены новые пользователи: {', '.join(added)}"])
-        subprocess.run(["git", "push", "origin", "main"])
-        print(f"Добавлены пользователи: {', '.join(added)}")
-    else:
-        print("Новых регистраций нет.")
-    exit(0)
-
-# === НОРМАЛЬНЫЙ РЕЖИМ ===
+# --- Данные ---
+people_data = load_json(PEOPLE_FILE, {"start_date": str(datetime.date.today()), "people": []})
 people = people_data.get("people", [])
-if not people:
-    print("Нет зарегистрированных пользователей.")
-    exit(0)
+state = load_json(STATE_FILE, {"last_day": None})
+history = load_json(HISTORY_FILE, [])
 
-today = datetime.date.today()
-start_date = datetime.date.fromisoformat(people_data["start_date"])
-days_passed = (today - start_date).days
-index_today = days_passed % len(people)
+today_date = datetime.date.today()
+today = today_date.isoformat()
 
-today_p = people[index_today]
-yesterday_p = people[(index_today - 1) % len(people)]
-tomorrow_p = people[(index_today + 1) % len(people)]
+def rotation_index(start_date_iso, people_len, on_date):
+    if people_len == 0:
+        return None
+    start = datetime.date.fromisoformat(start_date_iso)
+    return (on_date - start).days % people_len
 
-keyboard = {"inline_keyboard": [[{"text": "🗑 Выкинул", "callback_data": "done"}]]}
+def build_summary(people, idx):
+    if not people:
+        return "Сводка: нет участников. Напишите боту: мусор мой"
+    n = len(people)
+    i_today = idx
+    i_yest = (idx - 1) % n
+    i_tom = (idx + 1) % n
+    def fmt(p):
+        tg = p.get("tg") or ""
+        return f"{p.get('name','?')} {tg}".strip()
+    return (
+        f"🗓 Дата: {today}\n"
+        f"🧹 Сегодня выносит: {fmt(people[i_today])}\n"
+        f"📅 Вчера: {fmt(people[i_yest])}\n"
+        f"📆 Завтра: {fmt(people[i_tom])}"
+    )
 
-# === Проверка callback кнопок ===
-updates = get_updates()
-for u in updates:
-    if "callback_query" in u:
-        cb = u["callback_query"]
-        if cb["data"] == "done":
-            state["done_date"] = str(today)
-            save_json("state.json", state)
-            history.append({
-                "date": str(today),
-                "person": today_p["name"],
-                "time": datetime.datetime.now().strftime("%H:%M")
-            })
-            save_json("history.json", history)
-            requests.post(f"{API}/answerCallbackQuery", json={
-                "callback_query_id": cb["id"],
-                "text": "Принято 👍"
-            })
-            send_message(cb["from"]["id"], "Спасибо! Сегодня больше не напомню 🧹")
+def reset_new_day(recipients):
+    if state.get("last_day") == today:
+        return
+    # удаляем пинги и сбрасываем счётчики только у получателей текущего режима
+    for u in recipients:
+        key = str(u["chat_id"])
+        s = state.get(key, {})
+        pmid = s.get("ping_message_id")
+        if pmid:
+            delete_message(u["chat_id"], pmid)
+        s["ping_message_id"] = None
+        s["ping_count"] = 0
+        state[key] = s
+    state["last_day"] = today
 
-# === Сброс статуса ночью ===
-hour = datetime.datetime.now().hour
-if hour == 3:
-    state["done_date"] = None
-    save_json("state.json", state)
+def ensure_info(recipient_chat_id, text):
+    key = str(recipient_chat_id)
+    s = state.get(key, {})
+    mid = s.get("info_message_id")
+    if mid:
+        if not edit_message(recipient_chat_id, mid, text):
+            msg = send_message(recipient_chat_id, text, disable_notification=True)
+            if msg and "message_id" in msg:
+                s["info_message_id"] = msg["message_id"]
+    else:
+        msg = send_message(recipient_chat_id, text, disable_notification=True)
+        if msg and "message_id" in msg:
+            s["info_message_id"] = msg["message_id"]
+    state[key] = s
 
-# === Текст рассылки ===
-info_text = (
-    f"🗓 Сегодня {today.strftime('%A, %d %B %Y')}\n\n"
-    f"🧹 Сегодня выносит: {today_p['name']}\n"
-    f"📅 Вчера: {yesterday_p['name']}\n"
-    f"📆 Завтра: {tomorrow_p['name']}\n"
-)
+def send_or_replace_ping(recipient_chat_id, text):
+    key = str(recipient_chat_id)
+    s = state.get(key, {})
+    pmid = s.get("ping_message_id")
+    if pmid:
+        delete_message(recipient_chat_id, pmid)
+    msg = send_message(recipient_chat_id, text)
+    if msg and "message_id" in msg:
+        s["ping_message_id"] = msg["message_id"]
+    s["ping_count"] = int(s.get("ping_count", 0)) + 1
+    state[key] = s
 
-# === Уведомления (08:00 и 20:00) ===
-already_done = state.get("done_date") == str(today)
-if not already_done and hour in [8, 20]:
-    send_message(today_p["chat_id"], f"Привет, {today_p['name']}! Сегодня твоя очередь выносить мусор 🗑", reply_markup=keyboard)
+# --- Режимы ---
 
-# === Информационное сообщение всем ===
-for p in people:
-    send_message(p["chat_id"], info_text)
+def run_register_mode():
+    print("=== Register mode ===")
+    print("Пока не реализован long-poll getUpdates. Используйте ручное добавление в people.json.")
 
-# === Тестовый запуск ===
-if os.getenv("TEST_RUN") == "1":
-    for p in people:
-        send_message(p["chat_id"], "🔧 Тестовый запуск TrashBot прошёл успешно!")
+
+def run_normal_mode():
+    print("=== Normal mode ===")
+    if not people:
+        print("Нет участников.")
+        return
+    idx = rotation_index(people_data["start_date"], len(people), today_date)
+    summary = build_summary(people, idx)
+    user_today = people[idx]
+
+    recipients = people  # в нормальном режиме отправляем всем
+    reset_new_day(recipients)
+    # Инфо каждому (редактируемое)
+    for u in recipients:
+        ensure_info(u["chat_id"], summary)
+    # Пинг ответственному
+    ping_text = f"Напоминание: сегодня ваша очередь вынести мусор."
+    send_or_replace_ping(user_today["chat_id"], ping_text)
+
+
+def run_test_mode():
+    print("=== Test mode ===")
+    testers = [p for p in people if p.get("tester")]
+    if not testers:
+        print("Нет тестеров (people[*].tester = true)")
+        return
+    if not people:
+        print("Нет участников.")
+        return
+    idx = rotation_index(people_data["start_date"], len(people), today_date)
+    summary = build_summary(people, idx)
+    user_today = people[idx]
+
+    recipients = testers  # в тестовом режиме отправляем только тестерам
+    reset_new_day(recipients)
+
+    # Инфо: одно редактируемое сообщение КАЖДОМУ тестеру с пометкой кому бы пошло
+    info_text = (
+        "[TEST] Это тестовая сводка. В бою отправляется каждому участнику.\n\n" + summary
+    )
+    for t in testers:
+        ensure_info(t["chat_id"], info_text)
+
+    # Пинг: одно сообщение КАЖДОМУ тестеру с явной пометкой адресата
+    intended = f"{user_today.get('name')} {user_today.get('tg','')} (chat_id={user_today.get('chat_id')})"
+    ping_text = (
+        f"[TEST] Имитация пинга для: {intended}\n"
+        f"Напоминание: сегодня очередь вынести мусор."
+    )
+    for t in testers:
+        send_or_replace_ping(t["chat_id"], ping_text)
+
+
+def run_debug_mode():
+    print("=== Debug mode (admin panel) ===")
+    print(json.dumps(state, ensure_ascii=False, indent=2))
+
+
+if MODE == "register":
+    run_register_mode()
+elif MODE == "normal":
+    run_normal_mode()
+elif MODE == "test":
+    run_test_mode()
+elif MODE == "debug":
+    run_debug_mode()
+else:
+    print("❌ Unknown MODE")
+
+save_json(STATE_FILE, state)
+save_json(HISTORY_FILE, history)
+print("✅ Скрипт завершён.")
