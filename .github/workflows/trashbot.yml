@@ -38,7 +38,13 @@ jobs:
           SCOPE: ${{ github.event.inputs.SCOPE }}
         run: |
           MODE="${{ github.event.inputs.mode }}"
-          if [ -z "$MODE" ]; then MODE=test; fi
+          SCOPE="${{ github.event.inputs.SCOPE }}"
+          if [ -z "$MODE" ]; then
+            if [ "${{ github.event_name }}" = "schedule" ]; then MODE=normal; else MODE=test; fi
+          fi
+          if [ -z "$SCOPE" ]; then
+            if [ "${{ github.event_name }}" = "schedule" ]; then SCOPE=all; else SCOPE=testers; fi
+          fi
           export MODE
           export SCOPE
           python bot.py
