@@ -1,7 +1,7 @@
 name: TrashBot
 on:
   schedule:
-    - cron: '0 * * * *'  # каждый час
+    - cron: '*/15 * * * *'  # каждые 15 минут: окна 10:00, 20:00, 23:00
   workflow_dispatch:
     inputs:
       mode:
@@ -25,8 +25,11 @@ jobs:
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           MODE: ${{ github.event.inputs.mode }}
-      run: |
-        MODE="${{ github.event.inputs.mode }}"
-        if [ -z "$MODE" ]; then MODE=test; fi
-        export MODE
-        python bot.py
+          BOT_TZ: Europe/Moscow
+          FIRE_TIMES: 10:00,20:00,23:00
+          WINDOW_MIN: 15
+        run: |
+          MODE="${{ github.event.inputs.mode }}"
+          if [ -z "$MODE" ]; then MODE=test; fi
+          export MODE
+          python bot.py
