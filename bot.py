@@ -33,13 +33,17 @@ def save_json(name, data):
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 # --- Telegram API ---
+MOCK_MSG_ID = 0
+
 def _tg_call(method, payload):
+    global MOCK_MSG_ID
     if not TOKEN:
         # оффлайн/локально — просто логируем
         print(f"[TG/{method}] {json.dumps(payload, ensure_ascii=False)}")
         # эмулируем ответ с message_id
         if method in ("sendMessage",):
-            return {"message_id": 1}
+            MOCK_MSG_ID += 1
+            return {"message_id": MOCK_MSG_ID}
         return None
     url = f"{API}/{method}"
     resp = requests.post(url, json=payload, timeout=30)
@@ -199,6 +203,66 @@ def mark_fired_window(recipient_chat_id, tag):
     s["fired_windows"] = sorted(list(fired))
     state[key] = s
 
+
+
+def run_e2e_mode():
+    print("=== E2E test mode ===")
+    testers = [p for p in people if p.get('tester')]
+    if not testers:
+        print('Нет тестеров (people[*].tester = true)')
+        return
+    # 1) Purge pings
+    for u in testers:
+        key = str(u['chat_id'])
+        s2 = state.get(key, {})
+        pmid = s2.get('ping_message_id')
+        if pmid:
+            delete_message(u['chat_id'], pmid)
+        s2['ping_message_id'] = None
+        s2['ping_count'] = 0
+        s2['fired_windows'] = []
+        s2['info_last_day'] = None
+        state[key] = s2
+    # 2) Force info edit today
+    idx = rotation_index(people_data["start_date"], len(people), today_date)
+    summary = build_summary(people, idx)
+    for u in testers:
+        ensure_info(u['chat_id'], "[TEST/E2E] Форс-обновление сводки
+
+" + summary)
+    # 3) Ping replace cycle
+    results = []
+    for u in testers:
+        key = str(u['chat_id'])
+        s2 = state.get(key, {})
+        # first ping
+        send_or_replace_ping(u['chat_id'], '[TEST/E2E] Пинг #1 (будет заменён)')
+        s2 = state.get(key, {})
+        mid1 = s2.get('ping_message_id')
+        c1 = s2.get('ping_count')
+        # second ping (replace)
+        send_or_replace_ping(u['chat_id'], '[TEST/E2E] Пинг #2 (замена)')
+        s2 = state.get(key, {})
+        mid2 = s2.get('ping_message_id')
+        c2 = s2.get('ping_count')
+        replaced = (mid1 != mid2) and (c2 == (c1 or 0) + 1)
+        # delete
+        if mid2:
+            delete_message(u['chat_id'], mid2)
+        s2 = state.get(key, {})
+        s2['ping_message_id'] = None
+        state[key] = s2
+        deleted = state.get(key, {}).get('ping_message_id') is None
+        results.append({
+            'chat_id': u['chat_id'], 'name': u.get('name'),
+            'mid1': mid1, 'mid2': mid2, 'replaced': bool(replaced), 'deleted': bool(deleted)
+        })
+    # 4) Save E2E result
+    import json as _json
+    with open('e2e-result.json', 'w', encoding='utf-8') as f:
+        _json.dump({'date': today, 'results': results}, f, ensure_ascii=False, indent=2)
+    print('[E2E] Итог записан в e2e-result.json')
+
 # --- Режимы ---
 
 def run_register_mode():
@@ -314,6 +378,8 @@ elif MODE == "test":
     run_test_mode()
 elif MODE == "debug":
     run_debug_mode()
+elif MODE == "e2e":
+    run_e2e_mode()
 elif MODE == "maint_info":
     run_maint_info_mode(os.getenv("SCOPE", "testers"))
 elif MODE == "maint_purge":
