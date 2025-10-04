@@ -265,6 +265,42 @@ def run_test_mode():
                 mark_fired_window(t["chat_id"], tag)
 
 
+
+
+def _recipients_for(scope):
+    if scope == 'testers':
+        return [p for p in people if p.get('tester')]
+    return people
+
+def run_maint_info_mode(scope='testers'):
+    # Форс-редактирование инфо-сообщений для указанной группы
+    recips = _recipients_for(scope)
+    if not people or not recips:
+        print('Нет участников/тестеров')
+        return
+    idx = rotation_index(people_data["start_date"], len(people), today_date)
+    summary = build_summary(people, idx)
+    for u in recips:
+        key = str(u['chat_id'])
+        s2 = state.get(key, {})
+        s2['info_last_day'] = None  # форсим обновление
+        state[key] = s2
+        ensure_info(u['chat_id'], summary)
+
+
+def run_maint_purge_mode(scope='testers'):
+    # Удалить все активные пинги и сбросить счётчики для указанной группы
+    recips = _recipients_for(scope)
+    for u in recips:
+        key = str(u['chat_id'])
+        s2 = state.get(key, {})
+        pmid = s2.get('ping_message_id')
+        if pmid:
+            delete_message(u['chat_id'], pmid)
+        s2['ping_message_id'] = None
+        s2['ping_count'] = 0
+        state[key] = s2
+
 def run_debug_mode():
     print("=== Debug mode (admin panel) ===")
     print(json.dumps(state, ensure_ascii=False, indent=2))
@@ -278,6 +314,10 @@ elif MODE == "test":
     run_test_mode()
 elif MODE == "debug":
     run_debug_mode()
+elif MODE == "maint_info":
+    run_maint_info_mode(os.getenv("SCOPE", "testers"))
+elif MODE == "maint_purge":
+    run_maint_purge_mode(os.getenv("SCOPE", "testers"))
 else:
     print("❌ Unknown MODE")
 
