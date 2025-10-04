@@ -13,6 +13,9 @@ on:
         required: false
         default: 'testers'
 
+permissions:
+  contents: write
+
 jobs:
   run:
     runs-on: ubuntu-latest
@@ -48,3 +51,11 @@ jobs:
           git add state.json history.json e2e-result.json || true
           git commit -m "chore: update bot state [skip ci]" || true
           git push || true
+
+      - name: Upload E2E result
+        if: ${{ always() && (github.event.inputs.mode == "e2e") }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-result
+          path: e2e-result.json
+          if-no-files-found: ignore
