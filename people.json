@@ -1,4 +1,10 @@
 {
   "start_date": "2025-10-01",
-  "people": []
+  "people": [
+    {
+      "name": "Треангулированный",
+      "tg": "@shishmashih",
+      "chat_id": 704658354
+    }
+  ]
 }
