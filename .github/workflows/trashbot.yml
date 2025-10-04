@@ -7,7 +7,7 @@ on:
       mode:
         description: 'Режим запуска (normal/register/test)'
         required: false
-        default: 'normal'
+        default: 'test'
 
 jobs:
   run:
