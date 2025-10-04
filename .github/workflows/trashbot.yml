@@ -39,3 +39,12 @@ jobs:
           export MODE
           export SCOPE
           python bot.py
+
+      - name: Persist state
+        if: ${{ always() && (github.event.inputs.mode != "test") }}
+        run: |
+          git config user.name "trashbot[bot]"
+          git config user.email "trashbot-bot@users.noreply.github.com"
+          git add state.json history.json e2e-result.json || true
+          git commit -m "chore: update bot state [skip ci]" || true
+          git push || true
