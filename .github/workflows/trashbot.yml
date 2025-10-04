@@ -1,0 +1,24 @@
+name: TrashBot
+on:
+  schedule:
+    - cron: '0 * * * *'   # каждый час
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Режим запуска (normal/register/test)'
+        required: false
+        default: 'normal'
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -r requirements.txt
+      - name: Run bot
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          MODE: ${{ github.event.inputs.mode }}
+        run: python bot.py
